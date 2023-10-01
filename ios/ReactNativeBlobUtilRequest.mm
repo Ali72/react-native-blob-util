@@ -10,9 +10,9 @@
 
 #import "ReactNativeBlobUtilFS.h"
 #import "ReactNativeBlobUtilConst.h"
+#import "ReactNativeBlobUtilFileTransformer.h"
 #import "ReactNativeBlobUtilReqBuilder.h"
 
-#import "IOS7Polyfill.h"
 #import <CommonCrypto/CommonDigest.h>
 
 
@@ -47,7 +47,7 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
 @synthesize receivedBytes;
 @synthesize respData;
 @synthesize callback;
-@synthesize bridge;
+@synthesize baseModule;
 @synthesize options;
 @synthesize error;
 
@@ -67,7 +67,7 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
 // send HTTP request
 - (void) sendRequest:(__weak NSDictionary  * _Nullable )options
        contentLength:(long) contentLength
-              bridge:(RCTBridge * _Nullable)bridgeRef
+              baseModule:(__strong ReactNativeBlobUtil * _Nullable)baseModule
               taskId:(NSString * _Nullable)taskId
          withRequest:(__weak NSURLRequest * _Nullable)req
   taskOperationQueue:(NSOperationQueue * _Nonnull)operationQueue
@@ -76,7 +76,7 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
     self.taskId = taskId;
     self.respData = [[NSMutableData alloc] initWithLength:0];
     self.callback = callback;
-    self.bridge = bridgeRef;
+    self.baseModule = baseModule;
     self.expectedBytes = 0;
     self.receivedBytes = 0;
     self.options = options;
@@ -156,6 +156,12 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
         } else {
             destPath = [ReactNativeBlobUtilFS getTempPath:cacheKey withExtension:[self.options valueForKey:CONFIG_FILE_EXT]];
         }
+
+        // We still need to initialize this as a placeholder in memory before we perform
+        // the conversion
+        if ([self ShouldTransformFile]) {
+            respData = [[NSMutableData alloc] init];
+        }
     } else {
         respData = [[NSMutableData alloc] init];
         respFile = NO;
@@ -201,8 +207,8 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
 
         if (self.isServerPush) {
             if (partBuffer) {
-                [self.bridge.eventDispatcher
-                 sendDeviceEventWithName:EVENT_SERVER_PUSH
+                [self.baseModule
+                 emitEventDict:EVENT_SERVER_PUSH
                  body:@{
                         @"taskId": taskId,
                         @"chunk": [partBuffer base64EncodedStringWithOptions:0],
@@ -215,20 +221,20 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
 
             return;
         } else {
-            self.isServerPush = [[respCType lowercaseString] RNFBContainsString:@"multipart/x-mixed-replace;"];
+            self.isServerPush = [[respCType lowercaseString] containsString:@"multipart/x-mixed-replace;"];
         }
 
         if(respCType)
         {
             NSArray * extraBlobCTypes = [options objectForKey:CONFIG_EXTRA_BLOB_CTYPE];
 
-            if ([respCType RNFBContainsString:@"text/"]) {
+            if ([respCType containsString:@"text/"]) {
                 respType = @"text";
-            } else if ([respCType RNFBContainsString:@"application/json"]) {
+            } else if ([respCType containsString:@"application/json"]) {
                 respType = @"json";
             } else if(extraBlobCTypes) { // If extra blob content type is not empty, check if response type matches
                 for (NSString * substr in extraBlobCTypes) {
-                    if ([respCType RNFBContainsString:[substr lowercaseString]]) {
+                    if ([respCType containsString:[substr lowercaseString]]) {
                         respType = @"blob";
                         respFile = YES;
                         destPath = [ReactNativeBlobUtilFS getTempPath:taskId withExtension:nil];
@@ -257,9 +263,7 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
                 [cookieStore setCookies:cookies forURL:response.URL mainDocumentURL:nil];
             }
         }
-
-        [self.bridge.eventDispatcher
-         sendDeviceEventWithName: EVENT_STATE_CHANGE
+        [self.baseModule emitEventDict : EVENT_STATE_CHANGE
          body:@{
                 @"taskId": taskId,
                 @"state": @"2",
@@ -286,7 +290,7 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
 
             // if not set overwrite in options, defaults to TRUE
             BOOL overwrite = [options valueForKey:@"overwrite"] == nil ? YES : [[options valueForKey:@"overwrite"] boolValue];
-            BOOL appendToExistingFile = [destPath RNFBContainsString:@"?append=true"];
+            BOOL appendToExistingFile = [destPath containsString:@"?append=true"];
 
             appendToExistingFile = !overwrite;
 
@@ -333,8 +337,10 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
         chunkString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     }
 
-    if (respFile) {
-        [writeStream write:[data bytes] maxLength:[data length]];
+    // If we need to process the data, we defer writing into the file until the we have all the data, at which point
+    // we can perform the processing and then write into the file
+    if (respFile && ![self ShouldTransformFile]) {
+        [writeStream write:(const uint8_t *)[data bytes] maxLength:[data length]];
     } else {
         [respData appendData:data];
     }
@@ -343,18 +349,35 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
         return;
     }
 
-    NSNumber * now =[NSNumber numberWithFloat:((float)receivedBytes/(float)expectedBytes)];
+    // For non-chunked download, progress is received / expected
+    // For chunked download, progress can be either 0 (started) or 1 (ended)
+    NSNumber *now;
+    if (expectedBytes != NSURLResponseUnknownLength) {
+        now = [NSNumber numberWithFloat:((float)receivedBytes/(float)expectedBytes)];
+    } else {
+        now = @0;
+    }
 
     if ([self.progressConfig shouldReport:now]) {
-        [self.bridge.eventDispatcher
-         sendDeviceEventWithName:EVENT_PROGRESS
-         body:@{
+        NSDictionary *body;
+        if (expectedBytes == NSURLResponseUnknownLength) {
+            // For chunked downloads
+            body = @{
+                @"taskId": taskId,
+                @"written": [NSString stringWithFormat:@"%d", 0],
+                @"total": [NSString stringWithFormat:@"%lld", (long long) expectedBytes],
+                @"chunk": chunkString,
+            };
+        } else {
+            // For non-chunked downloads
+            body = @{
                 @"taskId": taskId,
                 @"written": [NSString stringWithFormat:@"%lld", (long long) receivedBytes],
                 @"total": [NSString stringWithFormat:@"%lld", (long long) expectedBytes],
-                @"chunk": chunkString
-                }
-         ];
+                @"chunk": chunkString,
+            };
+        }
+        [self.baseModule emitEventDict:EVENT_PROGRESS body:body];
     }
 }
 
@@ -387,9 +410,33 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
         } else {
             errMsg = [error localizedDescription];
         }
+    } else if ([self.progressConfig shouldReport:@1] && expectedBytes == NSURLResponseUnknownLength) {
+        // For chunked downloads
+        [self.baseModule emitEventDict:EVENT_PROGRESS body:@{
+            @"taskId": taskId,
+            @"written": [NSString stringWithFormat:@"%lld", (long long) receivedBytes],
+            @"total": [NSString stringWithFormat:@"%lld", (long long) receivedBytes],
+            @"chunk": @"",
+        }];
     }
 
     if (respFile) {
+        if ([self ShouldTransformFile]) {
+            // At this point, we have the data that we deferred to write into a file. We can now
+            // perform the conversion and write the converted data into the file.
+            NSObject<FileTransformer>* fileTransformer = [ReactNativeBlobUtilFileTransformer getFileTransformer];
+            if (!fileTransformer) {
+                errMsg = @"Transform file specified but file transfomer not set";
+            } else {
+                @try{
+                    NSData* transformedData = [fileTransformer onWriteFile:respData];
+                    [writeStream write:(const uint8_t *)[transformedData bytes] maxLength:[transformedData length]];
+                } @catch(NSException * ex)
+                {
+                    errMsg = [NSString stringWithFormat:@"Exception on File Transformer: '%@' ", [ex description]];
+                }
+            }
+        }
         [writeStream close];
         rnfbRespType = RESP_TYPE_PATH;
         respStr = destPath;
@@ -430,6 +477,10 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
 
 }
 
+- (BOOL) ShouldTransformFile{
+    return [[options valueForKey:CONFIG_TRANSFORM_FILE] boolValue];
+}
+
 // upload progress handler
 - (void) URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didSendBodyData:(int64_t)bytesSent totalBytesSent:(int64_t)totalBytesWritten totalBytesExpectedToSend:(int64_t)totalBytesExpectedToWrite
 {
@@ -440,8 +491,7 @@ typedef NS_ENUM(NSUInteger, ResponseFormat) {
     NSNumber * now = [NSNumber numberWithFloat:((float)totalBytesWritten/(float)totalBytesExpectedToWrite)];
 
     if ([self.uploadProgressConfig shouldReport:now]) {
-        [self.bridge.eventDispatcher
-         sendDeviceEventWithName:EVENT_PROGRESS_UPLOAD
+        [self.baseModule emitEventDict:EVENT_PROGRESS_UPLOAD
          body:@{
                 @"taskId": taskId,
                 @"written": [NSString stringWithFormat:@"%ld", (long) totalBytesWritten],

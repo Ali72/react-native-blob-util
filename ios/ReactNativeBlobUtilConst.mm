@@ -13,6 +13,7 @@ NSString *const AL_PREFIX = @"assets-library://";
 
 // fetch configs
 NSString *const CONFIG_USE_TEMP = @"fileCache";
+NSString *const CONFIG_TRANSFORM_FILE = @"transformFile";
 NSString *const CONFIG_FILE_PATH = @"path";
 NSString *const CONFIG_FILE_EXT = @"appendExt";
 NSString *const CONFIG_TRUSTY = @"trusty";
@@ -26,6 +27,7 @@ NSString *const EVENT_SERVER_PUSH = @"ReactNativeBlobUtilServerPush";
 NSString *const EVENT_PROGRESS = @"ReactNativeBlobUtilProgress";
 NSString *const EVENT_PROGRESS_UPLOAD = @"ReactNativeBlobUtilProgress-upload";
 NSString *const EVENT_EXPIRE = @"ReactNativeBlobUtilExpire";
+NSString *const EVENT_FILESYSTEM = @"ReactNativeBlobUtilFilesystem";
 
 NSString *const MSG_EVENT = @"ReactNativeBlobUtilMessage";
 NSString *const MSG_EVENT_LOG = @"log";

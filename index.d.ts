@@ -6,21 +6,31 @@
 export const ReactNativeBlobUtil: ReactNativeBlobUtilStatic;
 export type ReactNativeBlobUtil = ReactNativeBlobUtilStatic;
 export default ReactNativeBlobUtil;
+import {filedescriptor} from './types';
+import CanceledFetchError from './class/ReactNativeBlobUtilCanceledFetchError'
 
 interface ReactNativeBlobUtilStatic {
     fetch(method: Methods, url: string, headers?: { [key: string]: string }, body?: any
         | null): StatefulPromise<FetchBlobResponse>;
+
     base64: { encode(input: string): string; decode(input: string): string };
     android: AndroidApi;
     ios: IOSApi;
+
     config(options: ReactNativeBlobUtilConfig): ReactNativeBlobUtilStatic;
+
     session(name: string): ReactNativeBlobUtilSession;
+
     fs: FS;
+    MediaCollection: MediaCollection;
+
     wrap(path: string): string;
+
     net: Net;
     polyfill: Polyfill;
     // this require external module https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/oboe
     JSONStream: any;
+    CanceledFetchError: CanceledFetchError
 }
 
 export interface Polyfill {
@@ -45,10 +55,15 @@ export declare class ReactNativeBlobUtilFetchPolyfill {
 
 export interface ReactNativeBlobUtilFetchRepsonse {
     arrayBuffer(): Promise<any[]>;
+
     blob(): Promise<PolyfillBlob>;
+
     json(): Promise<any>;
+
     rawResp(): Promise<FetchBlobResponse>;
+
     text(): Promise<string>;
+
     bodyUsed: boolean;
     headers: any;
     ok: boolean;
@@ -64,46 +79,58 @@ export interface ReactNativeBlobUtilFetchRepsonse {
  */
 export interface FetchBlobResponse {
     taskId: string;
+
     /**
      * get path of response temp file
      * @return File path of temp file.
      */
     path(): string;
+
     type: "base64" | "path" | "utf8";
     data: any;
+
     /**
      * Convert result to javascript ReactNativeBlobUtil object.
      * @return Return a promise resolves Blob object.
      */
     blob(contentType: string, sliceSize: number): Promise<PolyfillBlob>;
+
     /**
      * Convert result to text.
      * @return Decoded base64 string.
      */
     text(): string | Promise<any>;
+
     /**
      * Convert result to JSON object.
      * @return Parsed javascript object.
      */
     json(): any;
+
     /**
      * Return BASE64 string directly.
      * @return BASE64 string of response body.
      */
     base64(): any;
+
     /**
      * Remove cahced file
      */
     flush(): void;
+
     respInfo: ReactNativeBlobUtilResponseInfo;
+
     info(): ReactNativeBlobUtilResponseInfo;
+
     session(name: string): ReactNativeBlobUtilSession | null;
+
     /**
      * Read file content with given encoding, if the response does not contains
      * a file path, show warning message
      * @param  encode Encode type, should be one of `base64`, `ascrii`, `utf8`.
      */
     readFile(encode: Encoding): Promise<any> | null;
+
     /**
      * Start read stream from cached file
      * @param  encode Encode type, should be one of `base64`, `ascrii`, `utf8`.
@@ -113,17 +140,27 @@ export interface FetchBlobResponse {
 
 export interface PolyfillFileReader extends EventTarget {
     isRNFBPolyFill: boolean;
+
     onloadstart(e: Event): void;
+
     onprogress(e: Event): void;
+
     onload(e: Event): void;
+
     onabort(e: Event): void;
+
     onerror(e: Event): void;
+
     onloadend(e: Event): void;
 
     abort(): void;
+
     readAsArrayBuffer(b: PolyfillBlob): void;
+
     readAsBinaryString(b: PolyfillBlob): void;
+
     readAsText(b: PolyfillBlob, label?: string): void;
+
     readAsDataURL(b: PolyfillBlob): void;
 
     readyState: number;
@@ -242,6 +279,7 @@ export interface PolyfillXMLHttpRequest extends PolyfillXMLHttpRequestEventTarge
     getAllResponseHeaders(): string | null;
 
     onreadystatechange(e: Event): void;
+
     readyState: number;
     status: number;
     statusText: string;
@@ -270,11 +308,17 @@ export declare namespace PolyfillXMLHttpRequest {
 
 export interface PolyfillXMLHttpRequestEventTarget extends EventTarget {
     onabort(e: Event): void;
+
     onerror(e: Event): void;
+
     onload(e: Event): void;
+
     onloadstart(e: Event): void;
+
     onprogress(e: Event): void;
+
     ontimeout(e: Event): void;
+
     onloadend(e: Event): void;
 }
 
@@ -295,6 +339,7 @@ export interface Net {
 }
 
 type HashAlgorithm = "md5" | "sha1" | "sha224" | "sha256" | "sha384" | "sha512";
+
 export interface FS {
     ReactNativeBlobUtilSession: ReactNativeBlobUtilSession;
 
@@ -356,6 +401,14 @@ export interface FS {
      */
     writeFile(path: string, data: string | number[], encoding?: Encoding): Promise<void>;
 
+    /**
+     * Processes the data and then writes to the file.
+     * @param  path  Path of the file.
+     * @param  data Data to write to the file.
+     * @param  encoding Encoding of data (Optional).
+     */
+     writeFileWithTransform(path: string, data: string | number[], encoding?: Encoding): Promise<void>;
+
     appendFile(path: string, data: string | number[], encoding?: Encoding | "uri"): Promise<number>;
 
     /**
@@ -364,6 +417,14 @@ export interface FS {
      * @param  encoding Encoding of read stream.
      */
     readFile(path: string, encoding: Encoding, bufferSize?: number): Promise<any>;
+
+    /**
+     * Reads from a file and then processes the data before returning
+     * @param  path Path of the file.
+     * @param  encoding Encoding of read stream.
+     */
+     readFileWithTransform(path: string, encoding: Encoding, bufferSize?: number): Promise<any>;
+
     /**
      * Check if file exists and if it is a folder.
      * @param  path Path to check
@@ -391,7 +452,9 @@ export interface FS {
     dirs: Dirs;
 
     slice(src: string, dest: string, start: number, end: number): Promise<void>;
+
     asset(path: string): string;
+
     df(): Promise<RNFetchBlobDf>;
 }
 
@@ -420,6 +483,13 @@ export interface Dirs {
     DCIMDir: string;
     SDCardDir: string;
     MainBundleDir: string;
+
+    LegacyPictureDir: string;
+    LegacyMusicDir: string;
+    LegacyMovieDir: string;
+    LegacyDownloadDir: string;
+    LegacyDCIMDir: string;
+    LegacySDCardDir: string; // Depracated
 }
 
 export interface ReactNativeBlobUtilWriteStream {
@@ -428,7 +498,8 @@ export interface ReactNativeBlobUtilWriteStream {
     append: boolean;
 
     write(data: string): Promise<void>;
-    close(): void;
+
+    close(): Promise<void>;
 }
 
 export interface ReactNativeBlobUtilReadStream {
@@ -454,17 +525,17 @@ export interface IOSApi {
     /**
      * Open a file in {@link https://developer.apple.com/reference/uikit/uidocumentinteractioncontroller UIDocumentInteractionController},
      * this is the default document viewer of iOS, supports several kinds of files. On Android, there's an similar method {@link android.actionViewIntent}.
-     * @param path This is a required field, the path to the document. The path should NOT contains any scheme prefix.
+     * @param path This is a required field, the path to the document. The path should NOT contain any scheme prefix.
      * @param  {string} scheme URI scheme that needs to support, optional
      */
     previewDocument(path: string, scheme?: string): void;
 
     /**
      * Show options menu for interact with the file.
-     * @param path This is a required field, the path to the document. The path should NOT contains any scheme prefix.
+     * @param path This is a required field, the path to the document. The path should NOT contain any scheme prefix.
      * @param  {string} scheme URI scheme that needs to support, optional
      */
-    openDocument(path: string, scheme?: string): void;
+    openDocument(path: string, scheme?: string): Promise<void>;
 
     /**
      * Displays an options menu using [UIDocumentInteractionController](https://developer.apple.com/reference/uikit/uidocumentinteractioncontroller).[presentOptionsMenu](https://developer.apple.com/documentation/uikit/uidocumentinteractioncontroller/1616814-presentoptionsmenu)
@@ -486,6 +557,12 @@ export interface IOSApi {
      * @param  {string} scheme URI scheme that needs to support, optional
      */
     presentPreview(path: string, scheme?: string): void;
+
+    /**
+     * Marks the file to be excluded from icloud/itunes backup. Works recursively if path is to a directory
+     * @param {string} path  Path to a file or directory to mark to be excluded.
+     */
+    excludeFromBackupKey(path: string): Promise<void>;
 }
 
 export interface AndroidDownloadOption {
@@ -526,7 +603,7 @@ export interface AndroidApi {
     actionViewIntent(path: string, mime: string, chooserTitle?: string): Promise<boolean | null>;
 
     /**
-     * 
+     *
      * This method brings up OS default file picker and resolves a file URI when the user selected a file.
      * However, it does not resolve or reject when user dismiss the file picker via pressing hardware back button,
      * but you can still handle this behavior via AppState.
@@ -560,7 +637,7 @@ export interface StatefulPromise<T> extends Promise<T> {
     /**
      * Add an event listener which triggers when data receiving from server.
      */
-    progress(callback: (received: number, total: number) => void): StatefulPromise<FetchBlobResponse>;
+    progress(callback: (received: string, total: string) => void): StatefulPromise<FetchBlobResponse>;
 
     /**
      * Add an event listener with custom configuration
@@ -652,6 +729,13 @@ export interface ReactNativeBlobUtilConfig {
     fileCache?: boolean;
 
     /**
+     * Set this property to true if you want the data to be processed before it gets written onto disk.
+     * This only has effect if the FileTransformer has been registered and the library is configured to write
+     * response onto disk.
+     */
+    transformFile?: boolean;
+
+    /**
      * Set this property to change temp file extension that created by fetch response data.
      */
     appendExt?: string;
@@ -699,6 +783,10 @@ export interface AddAndroidDownloads {
      */
     mediaScannable?: boolean;
     /**
+     * Only for Android >= Q; Enforces the file being stored to the MediaCollection Downloads. This might overwrite any value given in "path"
+     */
+    storeInDownloads?: boolean;
+    /**
      * A boolean value decide whether show a notification when download complete.
      */
     notification?: boolean;
@@ -717,7 +805,9 @@ export interface ReactNativeBlobUtilResponseInfo {
 
 export interface ReactNativeBlobUtilStream {
     onData(): void;
+
     onError(): void;
+
     onEnd(): void;
 }
 
@@ -730,4 +820,53 @@ export declare class ReactNativeBlobUtilStat {
     type: "directory" | "file";
     path: string;
     filename: string;
+}
+
+export type Mediatype = "Audio" | "Image" | "Video" | "Download";
+
+export interface MediaCollection {
+    /**
+     * Creates a new File in the collection.
+     * Promise will resolve to content UIR or error message
+     * @param filedata descriptor for the media store entry
+     * @param mediatype
+     * @param path path of the file being copied
+     */
+    copyToMediaStore(filedata: filedescriptor, mediatype: Mediatype, path: string): Promise<string>;
+
+
+    /**
+     * Creates a new File in the collection.
+     * @param filedata
+     * @param mediatype
+     */
+    createMediafile(filedata: filedescriptor, mediatype: Mediatype): Promise<string>;
+
+    /**
+     * Copies an existing file to a mediastore file
+     * @param uri URI of the destination mediastore file
+     * @param path Path to the existing file which should be copied
+     */
+    writeToMediafile(uri: string, path: string): Promise<string>
+
+    /**
+     * Copies and transforms an existing file to a mediastore file. Make sure FileTransformer is set
+     * @param uri URI of the destination mediastore file
+     * @param path Path to the existing file which should be copied
+     */
+    writeToMediafileWithTransform(uri: string, path: string): Promise<string>
+
+    /**
+     * Copies a file from the mediastore to the apps internal storage
+     * @param contenturi URI of the mediastore file
+     * @param destpath Path for the file in the internal storage
+     */
+    copyToInternal(contenturi: string, destpath: string): Promise<string>
+
+    /**
+     * Gets the blob data for a given URI in the mediastore
+     * @param contenturi
+     * @param encoding
+     */
+    getBlob(contenturi: string, encoding: string): Promise<string>
 }

@@ -4,26 +4,35 @@
 
 // import type {ReactNativeBlobUtilConfig, ReactNativeBlobUtilNative, ReactNativeBlobUtilStream} from './types'
 
-import {NativeModules, Platform} from 'react-native';
+import {Platform} from 'react-native';
 import ReactNativeBlobUtilSession from './class/ReactNativeBlobUtilSession';
 import ReactNativeBlobUtilWriteStream from './class/ReactNativeBlobUtilWriteStream';
 import ReactNativeBlobUtilReadStream from './class/ReactNativeBlobUtilReadStream';
 import ReactNativeBlobUtilFile from './class/ReactNativeBlobUtilFile';
+import ReactNativeBlobUtil from './codegenSpecs/NativeBlobUtils';
 
-const ReactNativeBlobUtil: ReactNativeBlobUtilNative = NativeModules.ReactNativeBlobUtil;
+const constants = ReactNativeBlobUtil.getConstants();
 
 const dirs = {
-    DocumentDir: ReactNativeBlobUtil.DocumentDir,
-    CacheDir: ReactNativeBlobUtil.CacheDir,
-    PictureDir: ReactNativeBlobUtil.PictureDir,
-    MusicDir: ReactNativeBlobUtil.MusicDir,
-    MovieDir: ReactNativeBlobUtil.MovieDir,
-    DownloadDir: ReactNativeBlobUtil.DownloadDir,
-    DCIMDir: ReactNativeBlobUtil.DCIMDir,
-    SDCardDir: ReactNativeBlobUtil.SDCardDir, // Depracated
-    SDCardApplicationDir: ReactNativeBlobUtil.SDCardApplicationDir, // Deprecated
-    MainBundleDir: ReactNativeBlobUtil.MainBundleDir,
-    LibraryDir: ReactNativeBlobUtil.LibraryDir
+    DocumentDir: constants.DocumentDir,
+    CacheDir: constants.CacheDir,
+    PictureDir: constants.PictureDir,
+    MusicDir: constants.MusicDir,
+    MovieDir: constants.MovieDir,
+    DownloadDir: constants.DownloadDir,
+    DCIMDir: constants.DCIMDir,
+    SDCardDir: constants.SDCardDir, // Depracated
+    SDCardApplicationDir: constants.SDCardApplicationDir, // Deprecated
+    MainBundleDir: constants.MainBundleDir,
+    LibraryDir: constants.LibraryDir,
+    ApplicationSupportDir: constants.ApplicationSupportDir,
+
+    LegacyPictureDir: constants.LegacyPictureDir,
+    LegacyMusicDir: constants.LegacyMusicDir,
+    LegacyMovieDir: constants.LegacyMovieDir,
+    LegacyDownloadDir: constants.LegacyDownloadDir,
+    LegacyDCIMDir: constants.LegacyDCIMDir,
+    LegacySDCardDir: constants.LegacySDCardDir, // Depracated
 };
 
 function addCode(code: string, error: Error): Error {
@@ -159,7 +168,20 @@ function readFile(path: string, encoding: string = 'utf8'): Promise<any> {
     if (typeof path !== 'string') {
         return Promise.reject(addCode('EINVAL', new TypeError('Missing argument "path" ')));
     }
-    return ReactNativeBlobUtil.readFile(path, encoding);
+    return ReactNativeBlobUtil.readFile(path, encoding, false);
+}
+
+/**
+ * Reads the file, then transforms it before returning the content
+ * @param  {string} path Path of the file.
+ * @param  {'base64' | 'utf8' | 'ascii'} encoding Encoding of read stream.
+ * @return {Promise<Array<number> | string>}
+ */
+function readFileWithTransform(path: string, encoding: string = 'utf8'): Promise<any> {
+    if (typeof path !== 'string') {
+        return Promise.reject(addCode('EINVAL', new TypeError('Missing argument "path" ')))
+    }
+    return ReactNativeBlobUtil.readFile(path, encoding, true);
 }
 
 /**
@@ -185,7 +207,31 @@ function writeFile(path: string, data: string | Array<number>, encoding: ?string
             return Promise.reject(addCode('EINVAL', new TypeError(`"data" must be a String when encoding is "utf8" or "base64", but it is "${typeof data}"`)));
         }
         else
-            return ReactNativeBlobUtil.writeFile(path, encoding, data, false);
+            return ReactNativeBlobUtil.writeFile(path, encoding, data, false, false);
+    }
+}
+
+/**
+ * Transforms the data and then writes to the file.
+ * @param  {string} path  Path of the file.
+ * @param  {string | number[]} data Data to write to the file.
+ * @param  {string} encoding Encoding of data (Optional).
+ * @return {Promise}
+ */
+function writeFileWithTransform(path: string, data: string | Array<number>, encoding: ?string = 'utf8'): Promise {
+    if (typeof path !== 'string') {
+        return Promise.reject(addCode('EINVAL', new TypeError('Missing argument "path" ')))
+    }
+    if (encoding.toLocaleLowerCase() === 'ascii') {
+        return Promise.reject(addCode('EINVAL', new TypeError('ascii is not supported for converted files')))
+    }
+    else {
+        if (typeof data !== 'string') {
+            return Promise.reject(addCode('EINVAL', new TypeError(`"data" must be a String when encoding is "utf8" or "base64", but it is "${typeof data}"`)))
+        }
+
+        else
+            return ReactNativeBlobUtil.writeFile(path, encoding, data, true, false)
     }
 }
 
@@ -205,7 +251,7 @@ function appendFile(path: string, data: string | Array<number>, encoding?: strin
             return Promise.reject(addCode('EINVAL'), new TypeError(`"data" must be a String when encoding is "utf8" or "base64", but it is "${typeof data}"`));
         }
         else
-            return ReactNativeBlobUtil.writeFile(path, encoding, data, true);
+            return ReactNativeBlobUtil.writeFile(path, encoding, data, false, true);
     }
 }
 
@@ -414,6 +460,8 @@ export default {
     cp,
     writeStream,
     writeFile,
+    writeFileWithTransform,
+    readFileWithTransform,
     appendFile,
     pathForAppGroup,
     syncPathAppGroup,

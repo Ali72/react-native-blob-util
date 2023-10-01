@@ -12,6 +12,7 @@
 #import <Foundation/Foundation.h>
 
 #import "ReactNativeBlobUtilProgress.h"
+#import "ReactNativeBlobUtil.h"
 
 #if __has_include(<React/RCTAssert.h>)
 #import <React/RCTBridgeModule.h>
@@ -27,7 +28,7 @@
 @property (nonatomic) BOOL isServerPush;
 @property (nullable, nonatomic) NSMutableData * respData;
 @property (nullable, strong, nonatomic) RCTResponseSenderBlock callback;
-@property (nullable, nonatomic) RCTBridge * bridge;
+@property (nullable, strong, nonatomic) ReactNativeBlobUtil * baseModule;
 @property (nullable, nonatomic) NSDictionary * options;
 @property (nullable, nonatomic) NSError * error;
 @property (nullable, nonatomic) ReactNativeBlobUtilProgress *progressConfig;
@@ -36,7 +37,7 @@
 
 - (void) sendRequest:(NSDictionary  * _Nullable )options
        contentLength:(long)contentLength
-              bridge:(RCTBridge * _Nullable)bridgeRef
+              baseModule:(ReactNativeBlobUtil * _Nullable)baseModule
               taskId:(NSString * _Nullable)taskId
          withRequest:(NSURLRequest * _Nullable)req
   taskOperationQueue:(NSOperationQueue * _Nonnull)operationQueue

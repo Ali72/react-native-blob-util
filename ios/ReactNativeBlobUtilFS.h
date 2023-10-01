@@ -18,13 +18,12 @@
 #import "RCTBridgeModule.h"
 #endif
 
-@import AssetsLibrary;
+#import <AssetsLibrary/AssetsLibrary.h>
 
 @interface ReactNativeBlobUtilFS : NSObject <NSStreamDelegate>  {
     NSOutputStream * outStream;
     NSInputStream * inStream;
     RCTResponseSenderBlock callback;
-    RCTBridge * bridge;
     Boolean isOpen;
     NSString * encoding;
     int bufferSize;
@@ -37,7 +36,6 @@
 @property (nonatomic) NSOutputStream * _Nullable outStream;
 @property (nonatomic) NSInputStream * _Nullable inStream;
 @property (strong, nonatomic) RCTResponseSenderBlock callback;
-@property (nonatomic) RCTBridge * bridge;
 @property (nonatomic) NSString * encoding;
 @property (nonatomic) NSString * taskId;
 @property (nonatomic) NSString * path;
@@ -54,6 +52,7 @@
 + (NSString *) getMovieDir;
 + (NSString *) getMusicDir;
 + (NSString *) getPictureDir;
++ (NSString *) getApplicationSupportDir;
 + (NSString *) getTempPath;
 + (NSString *) getTempPath:(NSString*)taskId withExtension:(NSString *)ext;
 + (NSString *) getPathOfAsset:(NSString *)assetURI;
@@ -71,7 +70,8 @@
 + (NSDictionary *) stat:(NSString *) path error:(NSError **) error;
 + (void) exists:(NSString *) path callback:(RCTResponseSenderBlock)callback;
 + (void) writeFileArray:(NSString *)path data:(NSArray *)data append:(BOOL)append resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject;
-+ (void) writeFile:(NSString *)path encoding:(NSString *)encoding data:(NSString *)data append:(BOOL)append resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject;
++ (void) writeFile:(NSString *)path encoding:(NSString *)encoding data:(NSString *)data transformFile:(BOOL)transformFile append:(BOOL)append resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject;
++ (void) readFile:(NSString *)path encoding:(NSString *)encoding transformFile:(BOOL)transformFile onComplete:(void (^)(NSData * content, NSString* code, NSString * errMsg))onComplete;
 + (void) readFile:(NSString *)path encoding:(NSString *)encoding onComplete:(void (^)(NSData * content, NSString* code, NSString * errMsg))onComplete;
 + (void) readAssetFile:(NSData *)assetUrl completionBlock:(void(^)(NSData * content))completionBlock failBlock:(void(^)(NSError * err))failBlock;
 + (void) slice:(NSString *)path
@@ -83,13 +83,12 @@
      rejecter:(RCTPromiseRejectBlock)reject;
 //+ (void) writeFileFromFile:(NSString *)src toFile:(NSString *)dest append:(BOOL)append;
 + (void) writeAssetToPath:(ALAssetRepresentation * )rep dest:(NSString *)dest;
-+ (void) readStream:(NSString *)uri encoding:(NSString * )encoding bufferSize:(int)bufferSize tick:(int)tick streamId:(NSString *)streamId bridgeRef:(RCTBridge *)bridgeRef;
++ (void) readStream:(NSString *)uri encoding:(NSString * )encoding bufferSize:(int)bufferSize tick:(int)tick streamId:(NSString *)streamId baseModule:(ReactNativeBlobUtil *)baseModule;
 + (void) df:(RCTResponseSenderBlock)callback;
 
 // constructor
 - (id) init;
 - (id)initWithCallback:(RCTResponseSenderBlock)callback;
-- (id)initWithBridgeRef:(RCTBridge *)bridgeRef;
 
 // file stream
 - (void) openWithDestination;

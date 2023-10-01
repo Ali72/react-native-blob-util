@@ -7,10 +7,10 @@ import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Environment;
 import android.os.StatFs;
-import android.os.SystemClock;
 import android.util.Base64;
 
-import com.ReactNativeBlobUtil.Utils.PathResolver;
+import androidx.annotation.NonNull;
+
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
@@ -19,26 +19,100 @@ import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
+import com.facebook.react.uimanager.UIManagerHelper;
+import com.facebook.react.uimanager.events.EventDispatcher;
 
-import java.io.*;
-import java.nio.charset.Charset;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 
 class ReactNativeBlobUtilFS {
 
     private ReactApplicationContext mCtx;
     private DeviceEventManagerModule.RCTDeviceEventEmitter emitter;
-    private String encoding = "base64";
-    private OutputStream writeStreamInstance = null;
-    private static HashMap<String, ReactNativeBlobUtilFS> fileStreams = new HashMap<>();
 
     ReactNativeBlobUtilFS(ReactApplicationContext ctx) {
         this.mCtx = ctx;
         this.emitter = ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class);
+    }
+
+    /**
+     * Write string with encoding to file (used for mediastore)
+     *
+     * @param path     Destination file path.
+     * @param encoding Encoding of the string.
+     * @param data     Array passed from JS context.
+     */
+    static boolean writeFile(String path, String encoding, String data, final boolean append) {
+        try {
+            int written;
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
+            File f = new File(path);
+            File dir = f.getParentFile();
+            if (!f.exists()) {
+                if (dir != null && !dir.exists()) {
+                    if (!dir.mkdirs() && !dir.exists()) {
+                        return false;
+                    }
+                }
+                if (!f.createNewFile()) {
+                    return false;
+                }
+            }
+
+            // write data from a file
+            if (encoding.equalsIgnoreCase(ReactNativeBlobUtilConst.DATA_ENCODE_URI)) {
+                String normalizedData = ReactNativeBlobUtilUtils.normalizePath(data);
+                File src = new File(normalizedData);
+                if (!src.exists()) {
+                    return false;
+                }
+                byte[] buffer = new byte[10240];
+                int read;
+                written = 0;
+                FileInputStream fin = null;
+                FileOutputStream fout = null;
+                try {
+                    fin = new FileInputStream(src);
+                    fout = new FileOutputStream(f, append);
+                    while ((read = fin.read(buffer)) > 0) {
+                        fout.write(buffer, 0, read);
+                        written += read;
+                    }
+                } finally {
+                    if (fin != null) {
+                        fin.close();
+                    }
+                    if (fout != null) {
+                        fout.close();
+                    }
+                }
+            } else {
+                byte[] bytes = ReactNativeBlobUtilUtils.stringToBytes(data, encoding);
+                FileOutputStream fout = new FileOutputStream(f, append);
+                try {
+                    fout.write(bytes);
+                    written = bytes.length;
+                } finally {
+                    fout.close();
+                }
+            }
+            return true;
+        } catch (FileNotFoundException e) {
+            // According to https://docs.oracle.com/javase/7/docs/api/java/io/FileOutputStream.html
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**
@@ -49,12 +123,11 @@ class ReactNativeBlobUtilFS {
      * @param data     Array passed from JS context.
      * @param promise  RCT Promise
      */
-    static void writeFile(String path, String encoding, String data, final boolean append, final Promise promise) {
+    static void writeFile(String path, String encoding, String data, final boolean transformFile, final boolean append, final Promise promise) {
         try {
             int written;
             File f = new File(path);
             File dir = f.getParentFile();
-
             if (!f.exists()) {
                 if (dir != null && !dir.exists()) {
                     if (!dir.mkdirs() && !dir.exists()) {
@@ -70,7 +143,7 @@ class ReactNativeBlobUtilFS {
 
             // write data from a file
             if (encoding.equalsIgnoreCase(ReactNativeBlobUtilConst.DATA_ENCODE_URI)) {
-                String normalizedData = normalizePath(data);
+                String normalizedData = ReactNativeBlobUtilUtils.normalizePath(data);
                 File src = new File(normalizedData);
                 if (!src.exists()) {
                     promise.reject("ENOENT", "No such file '" + path + "' " + "('" + normalizedData + "')");
@@ -97,7 +170,13 @@ class ReactNativeBlobUtilFS {
                     }
                 }
             } else {
-                byte[] bytes = stringToBytes(data, encoding);
+                byte[] bytes = ReactNativeBlobUtilUtils.stringToBytes(data, encoding);
+                if (transformFile) {
+                    if (ReactNativeBlobUtilFileTransformer.sharedFileTransformer == null) {
+                        throw new IllegalStateException("Write file with transform was specified but the shared file transformer is not set");
+                    }
+                    bytes = ReactNativeBlobUtilFileTransformer.sharedFileTransformer.onWriteFile(bytes);
+                }
                 FileOutputStream fout = new FileOutputStream(f, append);
                 try {
                     fout.write(bytes);
@@ -166,8 +245,8 @@ class ReactNativeBlobUtilFS {
      * @param encoding Encoding of read stream.
      * @param promise  JS promise
      */
-    static void readFile(String path, String encoding, final Promise promise) {
-        String resolved = normalizePath(path);
+    static void readFile(String path, String encoding, final boolean transformFile, final Promise promise) {
+        String resolved = ReactNativeBlobUtilUtils.normalizePath(path);
         if (resolved != null)
             path = resolved;
         try {
@@ -178,15 +257,15 @@ class ReactNativeBlobUtilFS {
             if (resolved != null && resolved.startsWith(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET)) {
                 String assetName = path.replace(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, "");
                 // This fails should an asset file be >2GB
-                length = (int) ReactNativeBlobUtil.RCTContext.getAssets().openFd(assetName).getLength();
+                length = (int) ReactNativeBlobUtilImpl.RCTContext.getAssets().openFd(assetName).getLength();
                 bytes = new byte[length];
-                InputStream in = ReactNativeBlobUtil.RCTContext.getAssets().open(assetName);
+                InputStream in = ReactNativeBlobUtilImpl.RCTContext.getAssets().open(assetName);
                 bytesRead = in.read(bytes, 0, length);
                 in.close();
             }
             // issue 287
             else if (resolved == null) {
-                InputStream in = ReactNativeBlobUtil.RCTContext.getContentResolver().openInputStream(Uri.parse(path));
+                InputStream in = ReactNativeBlobUtilImpl.RCTContext.getContentResolver().openInputStream(Uri.parse(path));
                 // TODO See https://developer.android.com/reference/java/io/InputStream.html#available()
                 // Quote: "Note that while some implementations of InputStream will return the total number of bytes
                 // in the stream, many will not. It is never correct to use the return value of this method to
@@ -209,7 +288,14 @@ class ReactNativeBlobUtilFS {
                 return;
             }
 
-            switch (encoding.toLowerCase()) {
+            if (transformFile) {
+                if (ReactNativeBlobUtilFileTransformer.sharedFileTransformer == null) {
+                    throw new IllegalStateException("Read file with transform was specified but the shared file transformer is not set");
+                }
+                bytes = ReactNativeBlobUtilFileTransformer.sharedFileTransformer.onReadFile(bytes);
+            }
+
+            switch (encoding.toLowerCase(Locale.ROOT)) {
                 case "base64":
                     promise.resolve(Base64.encodeToString(bytes, Base64.NO_WRAP));
                     break;
@@ -268,8 +354,44 @@ class ReactNativeBlobUtilFS {
             } else {
                 res.put("SDCardApplicationDir", "");
             }
+        } else {
+            res.put("SDCardDir", "");
+            res.put("SDCardApplicationDir", "");
         }
+
         res.put("MainBundleDir", ctx.getApplicationInfo().dataDir);
+
+        // TODO Change me with the correct path
+        res.put("LibraryDir", "");
+        res.put("ApplicationSupportDir", "");
+
+        return res;
+    }
+
+    /**
+     * Static method that returns legacy system folders to JS context (usage of deprecated functions since these retunr different folders)
+     *
+     * @param ctx React Native application context
+     */
+
+    @NonNull
+    @SuppressWarnings("deprecation")
+    static Map<String, Object> getLegacySystemfolders(ReactApplicationContext ctx) {
+        Map<String, Object> res = new HashMap<>();
+
+        res.put("LegacyDCIMDir", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM).getAbsolutePath());
+        res.put("LegacyPictureDir", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).getAbsolutePath());
+        res.put("LegacyMusicDir", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC).getAbsolutePath());
+        res.put("LegacyDownloadDir", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath());
+        res.put("LegacyMovieDir", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).getAbsolutePath());
+        res.put("LegacyRingtoneDir", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RINGTONES).getAbsolutePath());
+
+        String state = Environment.getExternalStorageState();
+        if (state.equals(Environment.MEDIA_MOUNTED)) {
+            res.put("LegacySDCardDir", Environment.getExternalStorageDirectory().getAbsolutePath());
+        } else {
+            res.put("LegacySDCardDir", "");
+        }
 
         return res;
     }
@@ -326,208 +448,9 @@ class ReactNativeBlobUtilFS {
      * @return String
      */
     static String getTmpPath(String taskId) {
-        return ReactNativeBlobUtil.RCTContext.getFilesDir() + "/ReactNativeBlobUtilTmp_" + taskId;
+        return ReactNativeBlobUtilImpl.RCTContext.getFilesDir() + "/ReactNativeBlobUtilTmp_" + taskId;
     }
 
-    /**
-     * Create a file stream for read
-     *
-     * @param path       File stream target path
-     * @param encoding   File stream decoder, should be one of `base64`, `utf8`, `ascii`
-     * @param bufferSize Buffer size of read stream, default to 4096 (4095 when encode is `base64`)
-     */
-    void readStream(String path, String encoding, int bufferSize, int tick, final String streamId) {
-        String resolved = normalizePath(path);
-        if (resolved != null)
-            path = resolved;
-
-        try {
-            int chunkSize = encoding.equalsIgnoreCase("base64") ? 4095 : 4096;
-            if (bufferSize > 0)
-                chunkSize = bufferSize;
-
-            InputStream fs;
-
-            if (resolved != null && path.startsWith(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET)) {
-                fs = ReactNativeBlobUtil.RCTContext.getAssets().open(path.replace(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, ""));
-            }
-            // fix issue 287
-            else if (resolved == null) {
-                fs = ReactNativeBlobUtil.RCTContext.getContentResolver().openInputStream(Uri.parse(path));
-            } else {
-                fs = new FileInputStream(new File(path));
-            }
-
-            int cursor = 0;
-            boolean error = false;
-
-            if (encoding.equalsIgnoreCase("utf8")) {
-                InputStreamReader isr = new InputStreamReader(fs, Charset.forName("UTF-8"));
-                BufferedReader reader = new BufferedReader(isr, chunkSize);
-                char[] buffer = new char[chunkSize];
-                // read chunks of the string
-                while (reader.read(buffer, 0, chunkSize) != -1) {
-                    String chunk = new String(buffer);
-                    emitStreamEvent(streamId, "data", chunk);
-                    if (tick > 0)
-                        SystemClock.sleep(tick);
-                }
-
-                reader.close();
-                isr.close();
-            } else if (encoding.equalsIgnoreCase("ascii")) {
-                byte[] buffer = new byte[chunkSize];
-                while ((cursor = fs.read(buffer)) != -1) {
-                    WritableArray chunk = Arguments.createArray();
-                    for (int i = 0; i < cursor; i++) {
-                        chunk.pushInt((int) buffer[i]);
-                    }
-                    emitStreamEvent(streamId, "data", chunk);
-                    if (tick > 0)
-                        SystemClock.sleep(tick);
-                }
-            } else if (encoding.equalsIgnoreCase("base64")) {
-                byte[] buffer = new byte[chunkSize];
-                while ((cursor = fs.read(buffer)) != -1) {
-                    if (cursor < chunkSize) {
-                        byte[] copy = new byte[cursor];
-                        System.arraycopy(buffer, 0, copy, 0, cursor);
-                        emitStreamEvent(streamId, "data", Base64.encodeToString(copy, Base64.NO_WRAP));
-                    } else
-                        emitStreamEvent(streamId, "data", Base64.encodeToString(buffer, Base64.NO_WRAP));
-                    if (tick > 0)
-                        SystemClock.sleep(tick);
-                }
-            } else {
-                emitStreamEvent(
-                        streamId,
-                        "error",
-                        "EINVAL",
-                        "Unrecognized encoding `" + encoding + "`, should be one of `base64`, `utf8`, `ascii`"
-                );
-                error = true;
-            }
-
-            if (!error)
-                emitStreamEvent(streamId, "end", "");
-            fs.close();
-
-        } catch (FileNotFoundException err) {
-            emitStreamEvent(
-                    streamId,
-                    "error",
-                    "ENOENT",
-                    "No such file '" + path + "'"
-            );
-        } catch (Exception err) {
-            emitStreamEvent(
-                    streamId,
-                    "error",
-                    "EUNSPECIFIED",
-                    "Failed to convert data to " + encoding + " encoded string. This might be because this encoding cannot be used for this data."
-            );
-            err.printStackTrace();
-        }
-    }
-
-    /**
-     * Create a write stream and store its instance in ReactNativeBlobUtilFS.fileStreams
-     *
-     * @param path     Target file path
-     * @param encoding Should be one of `base64`, `utf8`, `ascii`
-     * @param append   Flag represents if the file stream overwrite existing content
-     * @param callback Callback
-     */
-    void writeStream(String path, String encoding, boolean append, Callback callback) {
-        try {
-            File dest = new File(path);
-            File dir = dest.getParentFile();
-
-            if (!dest.exists()) {
-                if (dir != null && !dir.exists()) {
-                    if (!dir.mkdirs() && !dir.exists()) {
-                        callback.invoke("ENOTDIR", "Failed to create parent directory of '" + path + "'");
-                        return;
-                    }
-                }
-                if (!dest.createNewFile()) {
-                    callback.invoke("ENOENT", "File '" + path + "' does not exist and could not be created");
-                    return;
-                }
-            } else if (dest.isDirectory()) {
-                callback.invoke("EISDIR", "Expecting a file but '" + path + "' is a directory");
-                return;
-            }
-
-            OutputStream fs = new FileOutputStream(path, append);
-            this.encoding = encoding;
-            String streamId = UUID.randomUUID().toString();
-            ReactNativeBlobUtilFS.fileStreams.put(streamId, this);
-            this.writeStreamInstance = fs;
-            callback.invoke(null, null, streamId);
-        } catch (Exception err) {
-            callback.invoke("EUNSPECIFIED", "Failed to create write stream at path `" + path + "`; " + err.getLocalizedMessage());
-        }
-    }
-
-    /**
-     * Write a chunk of data into a file stream.
-     *
-     * @param streamId File stream ID
-     * @param data     Data chunk in string format
-     * @param callback JS context callback
-     */
-    static void writeChunk(String streamId, String data, Callback callback) {
-        ReactNativeBlobUtilFS fs = fileStreams.get(streamId);
-        OutputStream stream = fs.writeStreamInstance;
-        byte[] chunk = ReactNativeBlobUtilFS.stringToBytes(data, fs.encoding);
-        try {
-            stream.write(chunk);
-            callback.invoke();
-        } catch (Exception e) {
-            callback.invoke(e.getLocalizedMessage());
-        }
-    }
-
-    /**
-     * Write data using ascii array
-     *
-     * @param streamId File stream ID
-     * @param data     Data chunk in ascii array format
-     * @param callback JS context callback
-     */
-    static void writeArrayChunk(String streamId, ReadableArray data, Callback callback) {
-        try {
-            ReactNativeBlobUtilFS fs = fileStreams.get(streamId);
-            OutputStream stream = fs.writeStreamInstance;
-            byte[] chunk = new byte[data.size()];
-            for (int i = 0; i < data.size(); i++) {
-                chunk[i] = (byte) data.getInt(i);
-            }
-            stream.write(chunk);
-            callback.invoke();
-        } catch (Exception e) {
-            callback.invoke(e.getLocalizedMessage());
-        }
-    }
-
-    /**
-     * Close file write stream by ID
-     *
-     * @param streamId Stream ID
-     * @param callback JS context callback
-     */
-    static void closeStream(String streamId, Callback callback) {
-        try {
-            ReactNativeBlobUtilFS fs = fileStreams.get(streamId);
-            OutputStream stream = fs.writeStreamInstance;
-            fileStreams.remove(streamId);
-            stream.close();
-            callback.invoke();
-        } catch (Exception err) {
-            callback.invoke(err.getLocalizedMessage());
-        }
-    }
 
     /**
      * Unlink file at path
@@ -537,7 +460,7 @@ class ReactNativeBlobUtilFS {
      */
     static void unlink(String path, Callback callback) {
         try {
-            String normalizedPath = normalizePath(path);
+            String normalizedPath = ReactNativeBlobUtilUtils.normalizePath(path);
             ReactNativeBlobUtilFS.deleteRecursive(new File(normalizedPath));
             callback.invoke(null, true);
         } catch (Exception err) {
@@ -569,6 +492,7 @@ class ReactNativeBlobUtilFS {
      * @param promise JS promise
      */
     static void mkdir(String path, Promise promise) {
+        path = ReactNativeBlobUtilUtils.normalizePath(path);
         File dest = new File(path);
         if (dest.exists()) {
             promise.reject("EEXIST", (dest.isDirectory() ? "Folder" : "File") + " '" + path + "' already exists");
@@ -595,7 +519,8 @@ class ReactNativeBlobUtilFS {
      * @param callback JS context callback
      */
     static void cp(String path, String dest, Callback callback) {
-        path = normalizePath(path);
+        path = ReactNativeBlobUtilUtils.normalizePath(path);
+        dest = ReactNativeBlobUtilUtils.normalizePath(dest);
         InputStream in = null;
         OutputStream out = null;
         String message = "";
@@ -652,6 +577,8 @@ class ReactNativeBlobUtilFS {
      * @param callback JS context callback
      */
     static void mv(String path, String dest, Callback callback) {
+        path = ReactNativeBlobUtilUtils.normalizePath(path);
+        dest = ReactNativeBlobUtilUtils.normalizePath(dest);
         File src = new File(path);
         if (!src.exists()) {
             callback.invoke("Source file at path `" + path + "` does not exist");
@@ -694,13 +621,13 @@ class ReactNativeBlobUtilFS {
         if (isAsset(path)) {
             try {
                 String filename = path.replace(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, "");
-                com.ReactNativeBlobUtil.ReactNativeBlobUtil.RCTContext.getAssets().openFd(filename);
+                com.ReactNativeBlobUtil.ReactNativeBlobUtilImpl.RCTContext.getAssets().openFd(filename);
                 callback.invoke(true, false);
             } catch (IOException e) {
                 callback.invoke(false, false);
             }
         } else {
-            path = normalizePath(path);
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
             if (path != null) {
                 boolean exist = new File(path).exists();
                 boolean isDir = new File(path).isDirectory();
@@ -719,7 +646,7 @@ class ReactNativeBlobUtilFS {
      */
     static void ls(String path, Promise promise) {
         try {
-            path = normalizePath(path);
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
             File src = new File(path);
             if (!src.exists()) {
                 promise.reject("ENOENT", "No such file '" + path + "'");
@@ -754,7 +681,8 @@ class ReactNativeBlobUtilFS {
      */
     static void slice(String path, String dest, int start, int end, String encode, Promise promise) {
         try {
-            path = normalizePath(path);
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
+            dest = ReactNativeBlobUtilUtils.normalizePath(dest);
             File source = new File(path);
             if (source.isDirectory()) {
                 promise.reject("EISDIR", "Expecting a file but '" + path + "' is a directory");
@@ -796,7 +724,7 @@ class ReactNativeBlobUtilFS {
     }
 
     static void lstat(String path, final Callback callback) {
-        path = normalizePath(path);
+        path = ReactNativeBlobUtilUtils.normalizePath(path);
 
         new AsyncTask<String, Integer, Integer>() {
             @Override
@@ -835,7 +763,7 @@ class ReactNativeBlobUtilFS {
      */
     static void stat(String path, Callback callback) {
         try {
-            path = normalizePath(path);
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
             WritableMap result = statFile(path);
             if (result == null)
                 callback.invoke("failed to stat path `" + path + "` because it does not exist or it is not a folder", null);
@@ -854,11 +782,11 @@ class ReactNativeBlobUtilFS {
      */
     static WritableMap statFile(String path) {
         try {
-            path = normalizePath(path);
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
             WritableMap stat = Arguments.createMap();
             if (isAsset(path)) {
                 String name = path.replace(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, "");
-                AssetFileDescriptor fd = ReactNativeBlobUtil.RCTContext.getAssets().openFd(name);
+                AssetFileDescriptor fd = ReactNativeBlobUtilImpl.RCTContext.getAssets().openFd(name);
                 stat.putString("filename", name);
                 stat.putString("path", path);
                 stat.putString("type", "asset");
@@ -919,6 +847,8 @@ class ReactNativeBlobUtilFS {
                 return;
             }
 
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
+
             File file = new File(path);
 
             if (file.isDirectory()) {
@@ -965,6 +895,7 @@ class ReactNativeBlobUtilFS {
      */
     static void createFile(String path, String data, String encoding, Promise promise) {
         try {
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
             File dest = new File(path);
             boolean created = dest.createNewFile();
             if (encoding.equals(ReactNativeBlobUtilConst.DATA_ENCODE_URI)) {
@@ -990,7 +921,7 @@ class ReactNativeBlobUtilFS {
                     return;
                 }
                 OutputStream ostream = new FileOutputStream(dest);
-                ostream.write(ReactNativeBlobUtilFS.stringToBytes(data, encoding));
+                ostream.write(ReactNativeBlobUtilUtils.stringToBytes(data, encoding));
             }
             promise.resolve(path);
         } catch (Exception err) {
@@ -1007,6 +938,7 @@ class ReactNativeBlobUtilFS {
      */
     static void createFileASCII(String path, ReadableArray data, Promise promise) {
         try {
+            path = ReactNativeBlobUtilUtils.normalizePath(path);
             File dest = new File(path);
             boolean created = dest.createNewFile();
             if (!created) {
@@ -1086,56 +1018,6 @@ class ReactNativeBlobUtilFS {
     }
 
     /**
-     * String to byte converter method
-     *
-     * @param data     Raw data in string format
-     * @param encoding Decoder name
-     * @return Converted data byte array
-     */
-    private static byte[] stringToBytes(String data, String encoding) {
-        if (encoding.equalsIgnoreCase("ascii")) {
-            return data.getBytes(Charset.forName("US-ASCII"));
-        } else if (encoding.toLowerCase().contains("base64")) {
-            return Base64.decode(data, Base64.NO_WRAP);
-
-        } else if (encoding.equalsIgnoreCase("utf8")) {
-            return data.getBytes(Charset.forName("UTF-8"));
-        }
-        return data.getBytes(Charset.forName("US-ASCII"));
-    }
-
-    /**
-     * Private method for emit read stream event.
-     *
-     * @param streamName ID of the read stream
-     * @param event      Event name, `data`, `end`, `error`, etc.
-     * @param data       Event data
-     */
-    private void emitStreamEvent(String streamName, String event, String data) {
-        WritableMap eventData = Arguments.createMap();
-        eventData.putString("event", event);
-        eventData.putString("detail", data);
-        this.emitter.emit(streamName, eventData);
-    }
-
-    // "event" always is "data"...
-    private void emitStreamEvent(String streamName, String event, WritableArray data) {
-        WritableMap eventData = Arguments.createMap();
-        eventData.putString("event", event);
-        eventData.putArray("detail", data);
-        this.emitter.emit(streamName, eventData);
-    }
-
-    // "event" always is "error"...
-    private void emitStreamEvent(String streamName, String event, String code, String message) {
-        WritableMap eventData = Arguments.createMap();
-        eventData.putString("event", event);
-        eventData.putString("code", code);
-        eventData.putString("detail", message);
-        this.emitter.emit(streamName, eventData);
-    }
-
-    /**
      * Get input stream of the given path, when the path is a string starts with bundle-assets://
      * the stream is created by Assets Manager, otherwise use FileInputStream.
      *
@@ -1145,7 +1027,7 @@ class ReactNativeBlobUtilFS {
      */
     private static InputStream inputStreamFromPath(String path) throws IOException {
         if (path.startsWith(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET)) {
-            return ReactNativeBlobUtil.RCTContext.getAssets().open(path.replace(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, ""));
+            return ReactNativeBlobUtilImpl.RCTContext.getAssets().open(path.replace(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, ""));
         }
         return new FileInputStream(new File(path));
     }
@@ -1159,7 +1041,7 @@ class ReactNativeBlobUtilFS {
     private static boolean isPathExists(String path) {
         if (path.startsWith(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET)) {
             try {
-                ReactNativeBlobUtil.RCTContext.getAssets().open(path.replace(com.ReactNativeBlobUtil.ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, ""));
+                ReactNativeBlobUtilImpl.RCTContext.getAssets().open(path.replace(com.ReactNativeBlobUtil.ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET, ""));
             } catch (IOException e) {
                 return false;
             }
@@ -1172,25 +1054,6 @@ class ReactNativeBlobUtilFS {
 
     static boolean isAsset(String path) {
         return path != null && path.startsWith(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET);
-    }
-
-    /**
-     * Normalize the path, remove URI scheme (xxx://) so that we can handle it.
-     *
-     * @param path URI string.
-     * @return Normalized string
-     */
-    static String normalizePath(String path) {
-        if (path == null)
-            return null;
-        if (!path.matches("\\w+\\:.*"))
-            return path;
-
-        Uri uri = Uri.parse(path);
-        if (path.startsWith(ReactNativeBlobUtilConst.FILE_PREFIX_BUNDLE_ASSET)) {
-            return path;
-        } else
-            return PathResolver.getRealPathFromURI(ReactNativeBlobUtil.RCTContext, uri);
     }
 
 }

@@ -11,7 +11,6 @@
 #import "ReactNativeBlobUtilNetwork.h"
 #import "ReactNativeBlobUtilConst.h"
 #import "ReactNativeBlobUtilFS.h"
-#import "IOS7Polyfill.h"
 
 #if __has_include(<React/RCTAssert.h>)
 #import <React/RCTLog.h>
@@ -54,7 +53,7 @@
         [[self class] buildFormBody:form boundary:boundary onComplete:^(NSData *formData, BOOL hasError) {
             if(hasError)
             {
-                onComplete(nil, nil);
+                onComplete(nil, 0);
             }
             else
             {
@@ -118,11 +117,11 @@
                     orgPath = [[NSURL URLWithString:orgPath] path];
                     if([orgPath hasPrefix:AL_PREFIX])
                     {
-                        
-                        [ReactNativeBlobUtilFS readFile:orgPath encoding:nil onComplete:^(id content, NSString* code, NSString * err) {
+
+                        [ReactNativeBlobUtilFS readFile:orgPath encoding:nil transformFile:false onComplete:^(id content, NSString* code, NSString * err) {
                             if(err != nil)
                             {
-                                onComplete(nil, nil);
+                                onComplete(nil, 0);
                             }
                             else
                             {
@@ -132,7 +131,7 @@
                                 onComplete(request, [((NSData *)content) length]);
                             }
                         }];
-                        
+
                         return;
                     }
                     size = [[[NSFileManager defaultManager] attributesOfItemAtPath:orgPath error:nil] fileSize];
@@ -151,7 +150,7 @@
 
                     __block NSString * cType = [[self class]getHeaderIgnoreCases:@"content-type" fromHeaders:mheaders];
                     // when content-type is application/octet* decode body string using BASE64 decoder
-                    if([[cType lowercaseString] hasPrefix:@"application/octet"] || [[cType lowercaseString] RNFBContainsString:@";base64"])
+                    if([[cType lowercaseString] hasPrefix:@"application/octet"] || [[cType lowercaseString] containsString:@";base64"])
                     {
                         __block NSString * ncType = [[cType stringByReplacingOccurrencesOfString:@";base64" withString:@""]stringByReplacingOccurrencesOfString:@";BASE64" withString:@""];
                         if([mheaders valueForKey:@"content-type"] != nil)
@@ -223,7 +222,7 @@
                         NSString * orgPath = [content substringFromIndex:[FILE_PREFIX length]];
                         orgPath = [ReactNativeBlobUtilFS getPathOfAsset:orgPath];
 
-                        [ReactNativeBlobUtilFS readFile:orgPath encoding:nil onComplete:^(NSData *content, NSString* code, NSString * err) {
+                        [ReactNativeBlobUtilFS readFile:orgPath encoding:nil transformFile:false onComplete:^(NSData *content, NSString* code, NSString * err) {
                             if(err != nil)
                             {
                                 onComplete(formData, YES);

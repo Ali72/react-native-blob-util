@@ -10,17 +10,15 @@
 #import "ReactNativeBlobUtil.h"
 #import "ReactNativeBlobUtilFS.h"
 #import "ReactNativeBlobUtilConst.h"
-#import "IOS7Polyfill.h"
-@import AssetsLibrary;
+#import "ReactNativeBlobUtilFileTransformer.h"
+#import <AssetsLibrary/AssetsLibrary.h>
 
 #import <CommonCrypto/CommonDigest.h>
 
 #if __has_include(<React/RCTAssert.h>)
 #import <React/RCTBridge.h>
-#import <React/RCTEventDispatcher.h>
 #else
 #import "RCTBridge.h"
-#import "RCTEventDispatcher.h"
 #endif
 
 
@@ -58,14 +56,8 @@ NSMutableDictionary *fileStreams = nil;
     return self;
 }
 
-- (id)initWithBridgeRef:(RCTBridge *)bridgeRef {
-    self = [super init];
-    self.bridge = bridgeRef;
-    return self;
-}
-
 // static member getter
-+ (NSArray *) getFileStreams {
++ (NSDictionary *) getFileStreams {
 
     if(fileStreams == nil)
         fileStreams = [[NSMutableDictionary alloc] init];
@@ -124,6 +116,10 @@ NSMutableDictionary *fileStreams = nil;
     return [NSSearchPathForDirectoriesInDomains(NSPicturesDirectory, NSUserDomainMask, YES) firstObject];
 }
 
++ (NSString *) getApplicationSupportDir {
+    return [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
+}
+
 + (NSString *) getTempPath {
 
     return NSTemporaryDirectory();
@@ -156,11 +152,10 @@ NSMutableDictionary *fileStreams = nil;
          bufferSize:(int)bufferSize
                tick:(int)tick
            streamId:(NSString *)streamId
-          bridgeRef:(RCTBridge *)bridgeRef
+          baseModule:(ReactNativeBlobUtil*)baseModule
 {
     [[self class] getPathFromUri:uri completionHandler:^(NSString *path, ALAssetRepresentation *asset) {
 
-        __block RCTEventDispatcher * event = bridgeRef.eventDispatcher;
         __block int read = 0;
         __block int backoff = tick *1000;
         __block int chunkSize = bufferSize;
@@ -174,8 +169,8 @@ NSMutableDictionary *fileStreams = nil;
                 if([[NSFileManager defaultManager] fileExistsAtPath:path] == NO)
                 {
                     NSString * message = [NSString stringWithFormat:@"File does not exist at path %@", path];
-                    NSDictionary * payload = @{ @"event": FS_EVENT_ERROR, @"code": @"ENOENT", @"detail": message };
-                    [event sendDeviceEventWithName:streamId body:payload];
+                    NSDictionary * payload = @{ @"streamId":streamId, @"event": FS_EVENT_ERROR, @"code": @"ENOENT", @"detail": message };
+                    [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
                     free(buffer);
                     return ;
                 }
@@ -183,7 +178,7 @@ NSMutableDictionary *fileStreams = nil;
                 [stream open];
                 while((read = [stream read:buffer maxLength:bufferSize]) > 0)
                 {
-                    [[self class] emitDataChunks:[NSData dataWithBytes:buffer length:read] encoding:encoding streamId:streamId event:event];
+                    [[self class] emitDataChunks:[NSData dataWithBytes:buffer length:read] encoding:encoding streamId:streamId baseModule:baseModule];
                     if(tick > 0)
                     {
                         usleep(backoff);
@@ -198,7 +193,7 @@ NSMutableDictionary *fileStreams = nil;
                 while((read = [asset getBytes:buffer fromOffset:cursor length:bufferSize error:&err]) > 0)
                 {
                     cursor += read;
-                    [[self class] emitDataChunks:[NSData dataWithBytes:buffer length:read] encoding:encoding streamId:streamId event:event];
+                    [[self class] emitDataChunks:[NSData dataWithBytes:buffer length:read] encoding:encoding streamId:streamId baseModule:baseModule];
                     if(tick > 0)
                     {
                         usleep(backoff);
@@ -207,23 +202,23 @@ NSMutableDictionary *fileStreams = nil;
             }
             else
             {
-                NSDictionary * payload = @{ @"event": FS_EVENT_ERROR, @"code": @"EINVAL", @"detail": @"Unable to resolve URI" };
-                [event sendDeviceEventWithName:streamId body:payload];
+                NSDictionary * payload = @{ @"streamId":streamId, @"event": FS_EVENT_ERROR, @"code": @"EINVAL", @"detail": @"Unable to resolve URI" };
+                [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
             }
             // release buffer
             if(buffer != nil)
                 free(buffer);
 
         }
-        @catch (NSError * err)
+        @catch (NSException * ex)
         {
-            NSDictionary * payload = @{ @"event": FS_EVENT_ERROR, @"code": @"EUNSPECIFIED", @"detail": [err description] };
-            [event sendDeviceEventWithName:streamId body:payload];
+            NSDictionary * payload = @{ @"streamId":streamId, @"event": FS_EVENT_ERROR, @"code": @"EUNSPECIFIED", @"detail": [ex description] };
+            [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
         }
         @finally
         {
-            NSDictionary * payload = @{ @"event": FS_EVENT_END, @"detail": @"" };
-            [event sendDeviceEventWithName:streamId body:payload];
+            NSDictionary * payload = @{ @"streamId":streamId, @"event": FS_EVENT_END, @"detail": @"" };
+            [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
         }
 
     }];
@@ -232,7 +227,7 @@ NSMutableDictionary *fileStreams = nil;
 }
 
 // send read stream chunks via native event emitter
-+ (void) emitDataChunks:(NSData *)data encoding:(NSString *) encoding streamId:(NSString *)streamId event:(RCTEventDispatcher *)event
++ (void) emitDataChunks:(NSData *)data encoding:(NSString *) encoding streamId:(NSString *)streamId baseModule:(ReactNativeBlobUtil *)baseModule
 {
     @try
     {
@@ -240,15 +235,16 @@ NSMutableDictionary *fileStreams = nil;
         if([[encoding lowercaseString] isEqualToString:@"utf8"])
         {
             NSDictionary * payload = @{
+                @"streamId":streamId,
                                        @"event": FS_EVENT_DATA,
                                        @"detail" : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
                                        };
-            [event sendDeviceEventWithName:streamId body:payload];
+            [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
         }
         else if ([[encoding lowercaseString] isEqualToString:@"base64"])
         {
-            NSDictionary * payload = @{ @"event": FS_EVENT_DATA,  @"detail" : [data base64EncodedStringWithOptions:0] };
-            [event sendDeviceEventWithName:streamId body:payload];
+            NSDictionary * payload = @{ @"streamId":streamId, @"event": FS_EVENT_DATA,  @"detail" : [data base64EncodedStringWithOptions:0] };
+            [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
         }
         else if([[encoding lowercaseString] isEqualToString:@"ascii"])
         {
@@ -265,23 +261,25 @@ NSMutableDictionary *fileStreams = nil;
                 }
             }
 
-            NSDictionary * payload = @{ @"event": FS_EVENT_DATA,  @"detail" : asciiArray };
-            [event sendDeviceEventWithName:streamId body:payload];
+            NSDictionary * payload = @{ @"streamId":streamId, @"event": FS_EVENT_DATA,  @"detail" : asciiArray };
+            [baseModule emitEventDict:EVENT_FILESYSTEM body:payload];
         }
 
     }
     @catch (NSException * ex)
     {
         NSString * message = [NSString stringWithFormat:@"Failed to convert data to '%@' encoded string, this might due to the source data is not able to convert using this encoding. source = %@", encoding, [ex description]];
-        [event
-         sendDeviceEventWithName:streamId
+        [baseModule
+         emitEventDict:EVENT_FILESYSTEM
          body:@{
+            @"streamId":streamId,
                 @"event" : MSG_EVENT_ERROR,
                 @"detail" : message
                 }];
-        [event
-         sendDeviceEventWithName:MSG_EVENT
+        [baseModule
+         emitEventDict:MSG_EVENT
          body:@{
+            @"streamId":streamId,
                 @"event" : MSG_EVENT_WARN,
                 @"detail" : message
                 }];
@@ -343,6 +341,7 @@ NSMutableDictionary *fileStreams = nil;
 + (void) writeFile:(NSString *)path
                     encoding:(NSString *)encoding
                     data:(NSString *)data
+                    transformFile:(BOOL)transformFile
                     append:(BOOL)append
                     resolver:(RCTPromiseResolveBlock)resolve
                     rejecter:(RCTPromiseRejectBlock)reject
@@ -375,7 +374,7 @@ NSMutableDictionary *fileStreams = nil;
 
         NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:path];
         NSData * content = nil;
-        if([encoding RNFBContainsString:@"base64"]) {
+        if([encoding containsString:@"base64"]) {
             content = [[NSData alloc] initWithBase64EncodedString:data options:0];
         }
         else if([encoding isEqualToString:@"uri"]) {
@@ -390,15 +389,25 @@ NSMutableDictionary *fileStreams = nil;
         else {
             content = [data dataUsingEncoding:NSUTF8StringEncoding];
         }
+
+        if (transformFile) {
+            NSObject<FileTransformer>* fileTransformer = [ReactNativeBlobUtilFileTransformer getFileTransformer];
+            if (fileTransformer) {
+                content = [fileTransformer onWriteFile:content];
+            } else {
+                return reject(@"EUNSPECIFIED",@"Transform specified but transformer not set", nil);
+            }
+        }
+
         if(append == YES) {
             [fileHandle seekToEndOfFile];
             [fileHandle writeData:content];
             [fileHandle closeFile];
         }
         else {
-            if (![content writeToFile:path atomically:YES]) {
+            if (![content writeToFile:path options:NSDataWritingAtomic error:&err]) {
                 fm = nil;
-                return reject(@"EUNSPECIFIED", [NSString stringWithFormat:@"File '%@' could not be written.", path], nil);
+                return reject(@"EUNSPECIFIED", [NSString stringWithFormat:@"File '%@' could not be written; error: %@", path, [err description]], err);
             }
         }
         fm = nil;
@@ -484,6 +493,7 @@ NSMutableDictionary *fileStreams = nil;
 
 + (void) readFile:(NSString *)path
          encoding:(NSString *)encoding
+         transformFile:(BOOL) transformFile
        onComplete:(void (^)(NSData * content, NSString * codeStr, NSString * errMsg))onComplete
 {
     [[self class] getPathFromUri:path completionHandler:^(NSString *path, ALAssetRepresentation *asset) {
@@ -492,7 +502,8 @@ NSMutableDictionary *fileStreams = nil;
         __block Byte * buffer;
         if(asset != nil)
         {
-            buffer = malloc(asset.size);
+            int size = asset.size;
+            buffer = (Byte *)malloc(size);
             [asset getBytes:buffer fromOffset:0 length:asset.size error:&err];
             if(err != nil)
             {
@@ -500,7 +511,7 @@ NSMutableDictionary *fileStreams = nil;
                 free(buffer);
                 return;
             }
-            fileContent = [NSData dataWithBytes:buffer length:asset.size];
+            fileContent = [NSData dataWithBytes:buffer length:size];
             free(buffer);
         }
         else
@@ -518,26 +529,46 @@ NSMutableDictionary *fileStreams = nil;
 
         }
 
+        if (transformFile) {
+            NSObject<FileTransformer>* fileTransformer = [ReactNativeBlobUtilFileTransformer getFileTransformer];
+            if (fileTransformer) {
+                @try{
+                    fileContent = [fileTransformer onReadFile:fileContent];
+                } @catch (NSException * ex)
+                {
+                    onComplete(nil, @"EUNSPECIFIED", [NSString stringWithFormat:@"Exception on File Transformer: '%@' ", [ex description]]);
+                    return;
+                }
+            } else {
+                onComplete(nil, @"EUNSPECIFIED", @"Transform specified but transformer not set");
+                return;
+            }
+        }
+
         if(encoding != nil)
         {
             if([[encoding lowercaseString] isEqualToString:@"utf8"])
             {
                 NSString * utf8 = [[NSString alloc] initWithData:fileContent encoding:NSUTF8StringEncoding];
-                if(utf8 == nil)
-                    onComplete([[NSString alloc] initWithData:fileContent encoding:NSISOLatin1StringEncoding], nil, nil);
-                else
-                    onComplete(utf8, nil, nil);
+                if(utf8 == nil) {
+                    NSString * latin1 = [[NSString alloc] initWithData:fileContent encoding:NSISOLatin1StringEncoding];
+                    NSData * latin1Data = [latin1 dataUsingEncoding:NSISOLatin1StringEncoding];
+                    onComplete(latin1Data, nil, nil);
+                } else {
+                    onComplete(fileContent, nil, nil);
+                }
             }
             else if ([[encoding lowercaseString] isEqualToString:@"base64"]) {
-                onComplete([fileContent base64EncodedStringWithOptions:0], nil, nil);
+                NSString * base64String = [fileContent base64EncodedStringWithOptions:0];
+                onComplete([[NSData alloc] initWithBase64EncodedString:base64String options:0], nil, nil);
             }
             else if ([[encoding lowercaseString] isEqualToString:@"ascii"]) {
                 NSMutableArray * resultArray = [NSMutableArray array];
-                char * bytes = [fileContent bytes];
+                char * bytes = (char *)[fileContent bytes];
                 for(int i=0;i<[fileContent length];i++) {
                     [resultArray addObject:[NSNumber numberWithChar:bytes[i]]];
                 }
-                onComplete(resultArray, nil, nil);
+                onComplete((NSData *)resultArray, nil, nil);
             }
         }
         else
@@ -658,11 +689,11 @@ NSMutableDictionary *fileStreams = nil;
     if([fm fileExistsAtPath:path isDirectory:&isDir] == NO) {
         return nil;
     }
-    NSDictionary * info = [fm attributesOfItemAtPath:path error:&error];
-    NSString * size = [NSString stringWithFormat:@"%d", [info fileSize]];
+    NSDictionary * info = [fm attributesOfItemAtPath:path error:error];
+    NSString * size = [NSString stringWithFormat:@"%llu", [info fileSize]];
     NSString * filename = [path lastPathComponent];
     NSDate * lastModified;
-    [[NSURL fileURLWithPath:path] getResourceValue:&lastModified forKey:NSURLContentModificationDateKey error:&error];
+    [[NSURL fileURLWithPath:path] getResourceValue:&lastModified forKey:NSURLContentModificationDateKey error:error];
     return @{
              @"size" : size,
              @"filename" : filename,
@@ -727,7 +758,7 @@ NSMutableDictionary *fileStreams = nil;
     NSUInteger left = [decodedData length];
     NSUInteger nwr = 0;
     do {
-        nwr = [self.outStream write:[decodedData bytes] maxLength:left];
+        nwr = [self.outStream write:(const uint8_t *)[decodedData bytes] maxLength:left];
         if (-1 == nwr) break;
         left -= nwr;
     } while (left > 0);
@@ -741,7 +772,7 @@ NSMutableDictionary *fileStreams = nil;
     NSUInteger left = [chunk length];
     NSUInteger nwr = 0;
     do {
-        nwr = [self.outStream write:[chunk bytes] maxLength:left];
+        nwr = [self.outStream write:(const uint8_t *)[chunk bytes] maxLength:left];
         if (-1 == nwr) break;
         left -= nwr;
     } while (left > 0);
@@ -794,7 +825,7 @@ NSMutableDictionary *fileStreams = nil;
             long max = MIN(size, [end longValue]);
 
             if(![fm fileExistsAtPath:dest]) {
-                if(![fm createFileAtPath:dest contents:@"" attributes:nil]) {
+                if(![fm createFileAtPath:dest contents:[NSData new] attributes:nil]) {
                     return reject(@"ENOENT", [NSString stringWithFormat:@"File '%@' does not exist and could not be created", path], nil);
                 }
             }
@@ -810,7 +841,7 @@ NSMutableDictionary *fileStreams = nil;
                 }
                 else
                 {
-                    NSLog(@"read chunk %lu", 10240);
+                    NSLog(@"read chunk %d", 10240);
                     chunkSize = 10240;
                     chunk = [handle readDataOfLength:10240];
                 }
@@ -818,7 +849,7 @@ NSMutableDictionary *fileStreams = nil;
                     break;
                 long remain = expected - read;
 
-                [os write:[chunk bytes] maxLength:chunkSize];
+                [os write:(const uint8_t *)[chunk bytes] maxLength:chunkSize];
                 read += [chunk length];
             }
             [handle closeFile];
@@ -836,19 +867,20 @@ NSMutableDictionary *fileStreams = nil;
             long max = MIN(size, [end longValue]);
 
             while(read < expected) {
-                uint8_t * chunk[10240];
+                uint8_t chunk[10240];
+                uint8_t * pointerToChunk = &chunk[0];
                 long chunkSize = 0;
                 if([start longValue] + read + 10240 > max)
                 {
                     NSLog(@"read chunk %lu", max - read - [start longValue]);
                     chunkSize = max - read - [start longValue];
-                    chunkRead = [asset getBytes:chunk fromOffset:[start longValue] + read length:chunkSize error:nil];
+                    chunkRead = [asset getBytes:pointerToChunk fromOffset:[start longValue] + read length:chunkSize error:nil];
                 }
                 else
                 {
                     NSLog(@"read chunk %lu", 10240);
                     chunkSize = 10240;
-                    chunkRead = [asset getBytes:chunk fromOffset:[start longValue] + read length:chunkSize error:nil];
+                    chunkRead = [asset getBytes:pointerToChunk fromOffset:[start longValue] + read length:chunkSize error:nil];
                 }
                 if( chunkRead <= 0)
                     break;
